@@ -1,0 +1,127 @@
+gensim 训练词向量 （Windows 版本）
+
+    1、Windows 下安装gcc
+        a. 下载地址：www.mingw.org ，下载完成后点击安装即可
+        b. 配置环境变量
+             PATH中添加 C:\MinGW\bin
+        c. 判断是否安装成功
+             cmd.exe 中执行  g++ -v
+
+        参考：https://www.jianshu.com/p/ff24a81f3637
+    
+    2、安装Anaconda
+
+    3、安装gensim
+        pip install gensim
+    
+    4、安装 opencc ：繁简体字转换工具 （如下三种方式，推荐3）
+        	§ opencc是一款非常实用的繁简体字转换工具
+			    https://blog.csdn.net/helihongzhizhuo/article/details/47251935
+			
+			§ pip install opencc-python-reimplemented
+    			https://github.com/yichen0831/opencc-python
+	    		https://www.jianshu.com/p/320bdb7e584c
+		    	Windows下不好用！
+		
+			§ Windows下繁体简体转换
+				□ 用opencc工具进行繁简转换，首先去下载opencc：
+			    	https://bintray.com/package/files/byvoid/opencc/OpenCC
+				□ 解压
+				□ 进入解压文件夹，运行命令
+				eg. opencc -i wiki.zh.text -o wiki.zh.jian.text -c t2s.json进行转换 即可（繁体转化为简体）
+
+    5、安装jieba 分词
+        conda install jieba 或 pip install jieba
+    
+    6、对训练文本进行繁简体转换后，即可使用gensim进行词向量训练
+
+        from gensim.models import Word2Vec, KeyedVectors
+        
+        def load_sentences(sentences_path):
+            '''
+            加载语料
+            sentences_path：语料路径
+            '''
+            rfine = open(sentences_path,"r",encoding="utf8")
+            sentences = []
+            for line in rfine.readlines():
+                sentences.append(line.split(" "))
+
+            return sentences
+
+        def train_vec(sentences, model_path, vectors_path,size=100):
+            '''
+            训练向量
+            sentences：训练语料
+            model_path：模型保存路径(方便再次训练)
+            vectors_path：词向量保存路径
+            size：词向量的维度
+            '''
+            # 训练词向量
+            model = Word2Vec(sentences, size=size)
+            #  保存
+            model.save(model_path)
+            model.wv.save_word2vec_format(vectors_path,binary=True)
+
+        def retrain_vec(sentences,model_path,vectors_path):
+            '''
+            再次训练词向量
+            sentences：训练语料(可以与上次不同)
+            model_path：模型保存路径(方便再次训练)
+            vectors_path：词向量保存路径
+            epochs：训练轮数
+            '''
+            model = Word2Vec.load(model_path)
+            model.train(sentences)
+            model.save(model_path)
+            model.wv.save_word2vec_format(vectors_path, binary=True)
+
+        def vec_test(vectors_path,word=None):
+            '''
+            测试词向量
+            vectors_path：词向量路径
+            word：词
+            '''
+            model = KeyedVectors.load_word2vec_format(vectors_path,binary=True)
+            most_similar = model.wv.most_similar(word)
+            print(model[word])
+            print(most_similar)
+
+        def main():
+            sen_dim = 64
+            # 加载训练语料
+            # sentences = load_sentences("./data/BAIKE.delPunc_token.txt")  #Bai_Wiki_Sou_BAIKE.jian.txt
+            # print('加载语料成功', len(sentences))
+            # # 训练
+            # train_vec(sentences, "./model/vectors-300.mod", "./Vectors/baike.vectors-300.bin", sen_dim)
+            # 测试
+            vec_test("./Vectors/baidubaike.bin", "win10")
+            # 再次训练
+            #retrain_vec(sentences,“./model/bai_wiki_sou_baike_vectors-300.mod", "./Vectors/bai_wiki_sou_baike.vectors-300.bin”)
+
+        if __name__ == '__main__':
+            main()
+
+
+
+词向量 bin 文件转化为 txt 文件
+
+    from gensim.models.keyedvectors import KeyedVectors
+
+    if __name__ == '__main__':
+        model = KeyedVectors.load_word2vec_format('xx.bin', binary=True)
+        model.save_word2vec_format('xx.txt', binary=False)
+    
+
+    执行后会生成如下形式的文件
+
+    6115353 64
+    的 -2.7884722 4.0029984 6.104623 -5.4226665 10.305977 4.008107 -4.9348893 14.295364 10.478002 ...
+    了 -9.6732 2.2032099 10.394669 -3.869863 6.583167 2.8780916 -3.2162673 10.788201 1.5301564 ...
+    是 -4.6837463 -3.4957821 9.548599 -9.886372 5.909092 0.13435704 -2.3431132 6.590542 4.005476 ...
+    在 1.0615418 -1.2863601 10.179957 -0.88586646 16.49308 6.2491703 2.8630643 21.511724 -2.7711685 ...
+    他 -11.028131 -3.4855733 6.8120766 2.318052 12.84122 -0.6581004 -4.7509036 9.6469345 8.922085 ...
+    我 -9.202583 -4.729655 3.506789 -4.0271363 8.760625 0.53044724 -2.4250576 5.2651887 10.483643 ...
+    ...
+
+    第一行 表示词汇数量 和 每个词向量的维度

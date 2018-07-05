@@ -1,0 +1,310 @@
+
+Tensorflow 线上模型导出：
+
+    1、在线下模型中，定义好输入输出：
+        My code:
+        with tf.name_scope("inputs"):
+                    # 样本的占位符
+                    self.sample = tf.placeholder(tf.float32, [None, self.rnn_steps, self.rnn_input_size], name="sample")
+                    # rnn dropout 的keep prob 的占位符
+                    self.rnn_keep_prob = tf.placeholder(tf.float32, name="rnn_dropout_rate")
+                    # cnn dropout 的keep prob 的占位符
+                    self.cnn_keep_prob = tf.placeholder(tf.float32, name="cnn_dropout_rate")
+
+        with tf.name_scope("test"):
+                self.test_prediction = tf.nn.softmax(self.logits, name='test_prediction')
+
+    2、线下训练TensorFlow model ，存入某文件夹
+        保存code:
+        saver = tf.train.Saver(tf.global_variables())
+        with tf.Session() as sess:
+            your code  such as sess.run(...)
+
+        saver.save(sess, save_path)
+
+        生成文件示例：
+            a. xxx.ckpt.data-00000-of-00001
+            b. xxx.ckpt.index
+            c. xxx.ckpt.meta
+        a,b是保存的变量值，c是meta graph
+
+    3、将线下模型restore，按照以下脚本进行TensorFlow serving 模式的模型导出
+        import argparse
+        import os
+        import tensorflow as tf
+        from tensorflow.python.saved_model import builder as saved_model_builder
+        from tensorflow.python.saved_model import tag_constants
+        from tensorflow.python.saved_model import signature_constants
+        from tensorflow.python.saved_model import signature_def_utils
+        from tensorflow.python.saved_model import utils
+
+        def main():
+
+            meta_file = 'sava_path/model.ckpt.meta'
+            model_file = 'sava_path/model.ckpt'
+            export_path = 'export_path/test_1/'  #test_1 应该是个empty path
+
+            init_op = tf.global_variables_initializer()
+
+            with tf.Session() as sess:
+                with tf.device('device:CPU:0'):
+                    saver = tf.train.import_meta_graph(meta_file, clear_devices=True)
+
+                    sess.run(init_op)
+
+                    print('loading and restorying the model')
+
+                    saver.restore(sess, model_file)
+
+                    # inputs:
+                    graph = sess.graph
+                    input_word = graph.get_tensor_by_name('inputs/sample:0')   #其中，inputs是scope name
+                    rnn_keep_prob = graph.get_tensor_by_name("inputs/rnn_dropout_rate:0")
+                    cnn_keep_prob = graph.get_tensor_by_name("inputs/cnn_dropout_rate:0")
+
+                    # outputs:
+                    label = graph.get_tensor_by_name('test/test_prediction:0')
+
+                    builder = saved_model_builder.SavedModelBuilder(export_path)  #初始化
+
+                    tensor_info_x = tf.saved_model.utils.build_tensor_info(input_word)  # 对应graph 定义中的 name
+                    tensor_info_rnn_keep_prob = tf.saved_model.utils.build_tensor_info(rnn_keep_prob)
+                    tensor_info_cnn_keep_prob = tf.saved_model.utils.build_tensor_info(cnn_keep_prob)
+
+                    tensor_info_y = tf.saved_model.utils.build_tensor_info(label)
+
+                    prediction_signature = signature_def_utils.build_signature_def(
+                        inputs={'samples': tensor_info_x,
+                                'rnn_keep_prob':tensor_info_rnn_keep_prob,
+                                'cnn_keep_prob':tensor_info_cnn_keep_prob
+                                },
+                        outputs={'test_prediction': tensor_info_y},
+                        method_name=signature_constants.PREDICT_METHOD_NAME)
+
+                    legacy_init_op = tf.group(
+                        tf.tables_initializer(), name='legacy_init_op')
+
+                    builder.add_meta_graph_and_variables(
+                        sess,
+                        [tag_constants.SERVING],
+                        signature_def_map={
+                            signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY: prediction_signature,
+                        },
+                        legacy_init_op=legacy_init_op)
+
+                    builder.save(as_text=True)
+
+
+        if __name__ == '__main__':
+            main()
+            
+        导出文件示例：
+        • saved_model.pb/saved_model.pbtxt  : 序列化的TensorFlow：：savedmodel，包含一个或多个 图定义，及模型的元数据（如签名等），其中，.pb为二进制
+        • variables/   ：变量序列化文件
+            ○ variables.data-00000-of-00001
+            ○ variables.index
+	
+
+
+
+各种参考知识点汇总
+
+    用于构建和加载 SavedModel 的 API
+
+    From <https://www.tensorflow.org/programmers_guide/saved_model#building_a_savedmodel> 
+
+    MetaGraph 是一种数据流图，加上相关变量、资源和签名。
+    MetaGraphDef 是 MetaGraph 的协议缓冲区的表示法。
+    签名是一组与图有关的输入和输出.
+
+
+    Tensorflow框架实现中的“三”种图
+    Graph 是TensorFlow 表达计算任务的核心。
+    从前端（Python）描述网络结构，到后端多机和分布式系统部署，到底层Device（CPU,GPU,TPU）上运行，都是基于图来完成的。
+    保存和加载图有三种API
+
+        1. tf.train.Saver()/saver.restore()
+        2. export_meta_graph/Import_meta_graph
+        3. tf.train.write_graph()/tf.Import_graph_def()
+
+    基本概念：
+
+    Graph ： Operation 和 Tensor 的集合
+    当创建Python脚本如下：
+    a = tf.placeholder(tf.float32)
+    b = tf.placeholder(tf.float32)
+    c = tf.placeholder(tf.float32)
+    d = a*b+c
+    e = d*2
+
+    Python 描述了相应的图结构，
+    TensorFlow 将 Python生成的图 序列化为 Protocal Buffer，再通过C/C++/CUDA 运行 Protocol Buffer 所定义的图。
+
+    GraphDef
+    从Python Graph 中序列化出来的图叫做 GraphDef，
+    GraphDef 又是由许多叫做 NodeDef 的 Protocol Buffer 组成。
+    在概念上 NodeDef 与 （Python Graph 中的）Operation 相对应。
+
+    3个NodeDef
+    node {
+    name: "Placeholder"     # 注释：这是一个叫做 "Placeholder" 的node
+    op: "Placeholder"
+    attr {
+        key: "dtype"
+        value {
+        type: DT_FLOAT
+        }
+    }
+    attr {
+        key: "shape"
+        value {
+        shape {
+            unknown_rank: true
+        }
+        }
+    }
+    }
+    node {
+    name: "Placeholder_1"     # 注释：这是一个叫做 "Placeholder_1" 的node
+    op: "Placeholder"
+    attr {
+        key: "dtype"
+        value {
+        type: DT_FLOAT
+        }
+    }
+    attr {
+        key: "shape"
+        value {
+        shape {
+            unknown_rank: true
+        }
+        }
+    }
+    }
+    node {
+    name: "mul"                 # 注释：一个 Mul（乘法）操作
+    op: "Mul"
+    input: "Placeholder"        # 使用上面的node（即Placeholder和Placeholder_1）
+    input: "Placeholder_1"      # 作为这个Node的输入
+    attr {
+        key: "T"
+        value {
+        type: DT_FLOAT
+        }
+    }
+    }
+    attr（attribute的缩写）来定义数据类型和 Tensor 的形状。
+    Multiply通过 input 属性定义了两个placeholder作为其输入。无论是 Placeholder 还是 Multiply 都没有关于输出（output）的信息。
+
+        • tf.Operation 的序列化 ProtoBuf 是 NodeDef
+        • GraphDef 中只有网络的连接信息，却没有任何 Variables
+        • 实际线上 inference 中，通常就是使用 GraphDef，但是不是用Varible存储 weight，
+        • GraphDef 虽然不能保存 Variable，但可以保存 Constant
+    通过 tf.constant 将 weight 直接存储在 NodeDef 里，tensorflow 1.3.0 版本也提供了一套叫做 freeze_graph 的工具来自动的将图中的 Variable 替换成 constant 存储在 GraphDef 里面，并将该图导出为 Proto。
+        • tf.train.write_graph()/tf.Import_graph_def() 就是用来进行 GraphDef 读写的API。
+
+    MetaGraph
+    一个Meta Graph 由一个计算图和其相关的元数据构成
+    Meta Graph在具体实现上就是一个MetaGraphDef （同样是由 Protocol Buffer来定义的）
+    其包含了四种主要的信息，根据Tensorflow官网，这四种 Protobuf 分别是
+
+        1. MetaInfoDef，存一些元信息（比如版本和其他用户信息）
+        2. GraphDef， MetaGraph的核心内容之一，我们刚刚介绍过
+        3. SaverDef，图的Saver信息（比如最多同时保存的check-point数量，需保存的Tensor名字等，但并不保存Tensor中的实际内容）
+        4. CollectionDef 任何需要特殊注意的 Python 对象，需要特殊的标注以方便import_meta_graph 后取回。（比如“train_op”,"prediction"等等）
+        
+    Meta Graph中虽然包含Variable的信息，却没有 Variable 的实际值。所以从Meta Graph中恢复的图，其训练是从随机初始化的值开始的。训练中Variable的实际值都保存在check-point中，如果要从之前训练的状态继续恢复训练，就要从check-point中restore。
+
+    1. export_meta_graph/Import_meta_graph 就是用来进行 Meta Graph 读写的API。
+    2. tf.train.saver.save() 在保存check-point的同时也会保存Meta Graph。但是在恢复图时，tf.train.saver.restore() 只恢复 Variable，如果要从MetaGraph恢复图，需要使用 import_meta_graph。这是其实为了方便用户，有时我们不需要从MetaGraph恢复的图，而是需要在 python 中构建神经网络图，并恢复对应的 Variable。
+
+    Check-Point
+
+        • Check-point 里全面保存了训练某时间截面的信息，包括参数，超参数，梯度等等。
+        • tf.train.Saver()/saver.restore() 则能够完完整整保存和恢复神经网络的训练。
+        • Check-point分为两个文件保存Variable的二进制信息。
+        • ckpt文件保存了Variable的二进制信息，index文件用于保存 ckpt 文件中对应 Variable 的偏移量信息。
+
+    简而言之，Tensorflow 在前端 Python 中构建图，并且通过将该图序列化到 ProtoBuf GraphDef，以方便在后端运行。在这个过程中，图的保存、恢复和运行都通过 ProtoBuf 来实现。GraphDef，MetaGraph，以及Variable，Collection 和 Saver 等都有对应的 ProtoBuf 定义。ProtoBuf 的定义也决定了用户能对图进行的操作。例如用户只能找到Node的前一个Node，却无法得知自己的输出会由哪个Node接收。
+
+
+
+    TensorFlow 线上API 
+    官方：https://www.tensorflow.org/serving/serving_basic
+    <https://testerhome.com/topics/14693> 
+    https://blog.csdn.net/thriving_fcl/article/details/75213361
+
+    tensorflow serving 为让tensorflow 模型发布成线上服务而设立，能够支持固定的tensorflow模型格式，让保存到本地的模型不需要做任何改动就可以发布上线的同时，也提供了统一的API让我们访问模型服务。
+
+    目前tensorflow serving推荐的模型格式是savedmodel
+
+    当前 官方 TensorFlow serving 只支持Python2，故Python3可以用以下命令下载
+    pip install --upgrade tensorflow-serving-api-python3
+
+    From <https://github.com/tensorflow/serving/issues/700> 
+
+
+
+    TensorFlow serving 为生产环境设计，专注于将训练的模型加入产品环境中。
+    开发者用TensorFlow 构建模型，然后TensorFlow serving 基于客户端输入的数据使用TensorFlow训练好的模型进行预测。解决了模型无法提供服务的弊端，将产品商业化。
+    Tensorflow serving 使用（之前训练好的）模型实施基于客户端数据的预测。客户端会使用远程过程调用（RPC）接口与服务系统通信，TensorFlow serving 提供了一种基于 gRPC 的参考型前端实现，是Google开发的高性能开源RPC架构。
+    对于生产环境来说，启动模型，随着时间不断迭代模型，新的训练数据出现需要训练优化模型，这些都是常态。现在有了TensorFlow Serving就可以在不停止服务的情况下更新模型和数据。
+
+    TensorFlow SavedModel
+
+        • 特征：
+        1、多graphs 共享同一变量集，每一个graph 都有指定的tags去加载和恢复operation
+        2、支持 SignayureDefs 
+            a. Graphs 具有一系列 inputs 和 outputs，称为 signature 
+            b. SavedModel使用SignatureDefs来允许对可能需要与图保存的签名进行通用支持。
+            c. SignatureDefs document https://github.com/tensorflow/serving/blob/master/tensorflow_serving/g3doc/signature_defs.md
+            SignatureDef定义TensorFlow图形中支持的计算的签名。 SignatureDefs旨在提供通用支持来识别函数的输入和输出，并且可以在构建SavedModel时指定。
+            
+                i. SignatureDef structure  需要规定：
+                inputs：为tensorinfo 的字符串映射
+                Outputs: 为 TensorInfo 的字符串映射
+                method_name 对应于加载 tool/system 中支持的方法名称
+                    TensorInfo: TensorInfo本身需要指定名称，dtype和张量形状。 尽管张量信息已经存在于图中，但明确将TensorInfo定义为SignatureDef的一部分非常有用，因为工具可以执行签名验证等，而无需读取图定义。
+                    https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/protobuf/meta_graph.proto#L194
+                ii. Constants
+                
+        3、支持 assets
+        对于ops依赖外部文件进行初始化，例如词汇表，savedmodel 通过asserts支持这种情形
+        
+        
+        • 组件  
+        assets/
+        assets.extra/
+        variables/
+            variables.data-?????-of-?????
+            variables.index
+        saved_model.pb
+        
+        • APIs ： 构建和加载 Savedmodel 
+        1、Builder
+            SavedModelBuilder 提供存储多 meta graph 定义、关联变量和asserts的功能
+            第一个 meta graph必须和变量一起存储，子图就可以按照图定义进行简化存储。
+            若 多meta graph 定义 有相同名称，则保留第一个版本
+        2、Tags
+            添加到SavedModel的每个meta graph 必须用用户指定的标签注释。 这些标签提供了一种方法来识别要加载和恢复的特定元图，以及共享的一组变量和assets。 这些标签通常用MetaGraph的功能（例如serving或training）以及可能的硬件特定方面（例如GPU）来注释。
+            export_dir = ...
+            ...
+            builder = tf.saved_model.builder.SavedModelBuilder(export_dir)
+            with tf.Session(graph=tf.Graph()) as sess:
+            ...
+            builder.add_meta_graph_and_variables(sess,
+                                                [tf.saved_model.tag_constants.TRAINING],
+                                                signature_def_map=foo_signatures,
+                                                assets_collection=foo_assets)
+            ...
+            with tf.Session(graph=tf.Graph()) as sess:
+            ...
+            builder.add_meta_graph(["bar-tag", "baz-tag"])
+            ...
+            builder.save()
+                    
+             From <https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/saved_model/README.md> 
+            
+        
+
